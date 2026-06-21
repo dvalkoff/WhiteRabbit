@@ -30,6 +30,14 @@ every participant's local member list in sync.
    member list, so only their messages reach the new member. Other participants
    (with stale lists) don't send to the newly added user.
 
+5. **Group chats reappear empty after logout/login.**
+   Logout clears local state, but on next login `loadGroups` repopulates groups
+   from the server (group membership is persisted server-side) while message
+   history is in-memory only and was wiped. Result: the group chats show up in
+   the list again with no messages. Either persist/clear group state to match the
+   "logout deletes chats" expectation, or persist message history locally so it
+   survives re-login.
+
 ### Direction (not yet implemented)
 - Propagate membership changes to all members (e.g. a group "membership-updated"
   control message fanned out to current members, prompting each client to

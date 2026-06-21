@@ -50,7 +50,7 @@ struct GroupInfoView: View {
     private func memberRow(_ id: String) -> some View {
         let title = app.chatStore.nickname(for: id) + (id == myID ? " (you)" : "")
         return HStack {
-            AvatarView(photoKey: nil, name: app.chatStore.nickname(for: id), size: 32)
+            AvatarView(photoKey: app.chatStore.photoKey(for: id), name: app.chatStore.nickname(for: id), size: 32)
             Text(title)
             Spacer()
             if id != myID {

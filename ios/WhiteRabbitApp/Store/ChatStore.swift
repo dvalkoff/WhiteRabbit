@@ -45,6 +45,10 @@ final class ChatStore: ObservableObject {
     /// Known peer nicknames, independent of whether a conversation row exists yet.
     /// Lets us open a chat (and label it) without creating an empty feed entry.
     private var nicknameCache: [String: String] = [:]
+    /// Known peer avatar object keys, so rows can render others' profile photos.
+    private var photoCache: [String: String] = [:]
+
+    func photoKey(for id: String) -> String? { photoCache[id] }
 
     func messages(for peerID: String) -> [ChatMessage] {
         messagesByPeer[peerID] ?? []
@@ -58,8 +62,9 @@ final class ChatStore: ObservableObject {
 
     /// Remember a peer's nickname without creating a conversation row. A row is
     /// only created once an actual message exists (see addMessage).
-    func remember(peerID: String, nickname: String) {
+    func remember(peerID: String, nickname: String, photoKey: String? = nil) {
         nicknameCache[peerID] = nickname
+        if let photoKey, !photoKey.isEmpty { photoCache[peerID] = photoKey }
         // If a 1:1 conversation already exists, keep its label fresh.
         if let idx = conversations.firstIndex(where: { $0.peerID == peerID && !$0.isGroup }) {
             conversations[idx].nickname = nickname

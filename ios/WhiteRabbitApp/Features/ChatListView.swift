@@ -138,11 +138,13 @@ struct ChatListView: View {
 }
 
 private struct ConversationRow: View {
+    @EnvironmentObject var app: AppState
     let convo: Conversation
 
     var body: some View {
         HStack {
-            AvatarView(photoKey: nil, name: convo.nickname, size: 44, isGroup: convo.isGroup)
+            AvatarView(photoKey: convo.isGroup ? nil : app.chatStore.photoKey(for: convo.peerID),
+                       name: convo.nickname, size: 44, isGroup: convo.isGroup)
             VStack(alignment: .leading, spacing: 2) {
                 Text(convo.nickname).font(.headline)
                 Text(convo.lastMessage).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)

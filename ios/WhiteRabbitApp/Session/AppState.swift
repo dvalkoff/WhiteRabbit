@@ -114,7 +114,7 @@ final class AppState: ObservableObject {
     }
 
     private func registerGroup(_ g: GroupView) {
-        for m in g.members { chatStore.remember(peerID: m.id, nickname: m.nickname) }
+        for m in g.members { chatStore.remember(peerID: m.id, nickname: m.nickname, photoKey: m.photoUrl) }
         chatStore.upsertGroup(id: g.id, name: g.name, memberIDs: g.members.map { $0.id })
     }
 
@@ -228,7 +228,7 @@ final class AppState: ObservableObject {
 
     private func resolveNickname(_ userID: String) async {
         if let user = try? await api.getUser(userID) {
-            chatStore.remember(peerID: user.id, nickname: user.nickname)
+            chatStore.remember(peerID: user.id, nickname: user.nickname, photoKey: user.photoUrl)
         }
     }
 
@@ -237,7 +237,7 @@ final class AppState: ObservableObject {
     /// Open a chat with a person. This only remembers their nickname; the
     /// conversation appears in the feed once the first message is sent or received.
     func startConversation(with user: UserView) {
-        chatStore.remember(peerID: user.id, nickname: user.nickname)
+        chatStore.remember(peerID: user.id, nickname: user.nickname, photoKey: user.photoUrl)
     }
 
     func searchUsers(_ query: String) async -> [UserView] {

@@ -32,6 +32,19 @@ final class FileService {
                           size: data.count, width: width, height: height)
     }
 
+    /// Upload bytes WITHOUT encryption (used for profile avatars, which need to be
+    /// viewable by anyone who can see the user). Returns the object key.
+    func uploadPlain(_ data: Data, mime: String) async throws -> String {
+        let (objectKey, putURL) = try await api.uploadURL()
+        var req = URLRequest(url: putURL)
+        req.httpMethod = "PUT"
+        let (_, resp) = try await session.upload(for: req, from: data)
+        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw APIError.http((resp as? HTTPURLResponse)?.statusCode ?? 0, "avatar upload failed")
+        }
+        return objectKey
+    }
+
     /// Download the ciphertext for an attachment and decrypt it.
     func downloadAndDecrypt(_ attachment: Attachment) async throws -> Data {
         let getURL = try await api.downloadURL(key: attachment.key)

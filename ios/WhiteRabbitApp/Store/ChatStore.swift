@@ -7,7 +7,9 @@ enum DeliveryState: String { case sending, sent, delivered, failed }
 struct ChatMessage: Identifiable, Equatable {
     let id: String          // server message id (or temp client id while sending)
     var clientID: String?   // correlates the Ack for an outgoing message
-    let peerID: String
+    let peerID: String      // conversation id (peer userID for 1:1, groupID for group)
+    var senderID: String = ""   // who sent it (used to label group messages)
+    var senderName: String?     // resolved display name of the sender (groups)
     let text: String              // optional caption / text body
     var attachments: [Attachment] = []
     let isMine: Bool
@@ -20,10 +22,12 @@ struct ChatMessage: Identifiable, Equatable {
     }
 }
 
-/// A conversation row in the feed.
+/// A conversation row in the feed — a 1:1 chat or a group.
 struct Conversation: Identifiable, Equatable {
-    let peerID: String
-    var nickname: String
+    let peerID: String         // peer userID for 1:1, groupID for group
+    var nickname: String       // display title (peer nickname or group name)
+    var isGroup: Bool = false
+    var memberIDs: [String] = []   // group members (for fan-out), groups only
     var lastMessage: String
     var lastMessageAt: Date
     var unread: Int
@@ -56,11 +60,32 @@ final class ChatStore: ObservableObject {
     /// only created once an actual message exists (see addMessage).
     func remember(peerID: String, nickname: String) {
         nicknameCache[peerID] = nickname
-        // If a conversation already exists, keep its label fresh.
-        if let idx = conversations.firstIndex(where: { $0.peerID == peerID }) {
+        // If a 1:1 conversation already exists, keep its label fresh.
+        if let idx = conversations.firstIndex(where: { $0.peerID == peerID && !$0.isGroup }) {
             conversations[idx].nickname = nickname
         }
     }
+
+    /// Create or update a group conversation. Unlike 1:1 chats, groups exist
+    /// server-side and so appear in the feed immediately (even before messages).
+    func upsertGroup(id: String, name: String, memberIDs: [String]) {
+        if let idx = conversations.firstIndex(where: { $0.peerID == id }) {
+            conversations[idx].nickname = name
+            conversations[idx].isGroup = true
+            conversations[idx].memberIDs = memberIDs
+        } else {
+            conversations.append(Conversation(peerID: id, nickname: name, isGroup: true,
+                                              memberIDs: memberIDs, lastMessage: "",
+                                              lastMessageAt: .distantPast, unread: 0))
+        }
+        sortFeed()
+    }
+
+    func conversation(_ id: String) -> Conversation? {
+        conversations.first { $0.peerID == id }
+    }
+
+    func isGroup(_ id: String) -> Bool { conversation(id)?.isGroup ?? false }
 
     func addMessage(_ msg: ChatMessage, incrementUnread: Bool = false, nickname: String? = nil) {
         var list = messagesByPeer[msg.peerID] ?? []
@@ -154,6 +179,11 @@ final class ChatStore: ObservableObject {
         if let idx = conversations.firstIndex(where: { $0.peerID == peerID }) {
             conversations[idx].unread = 0
         }
+    }
+
+    func removeConversation(_ id: String) {
+        conversations.removeAll { $0.peerID == id }
+        messagesByPeer[id] = nil
     }
 
     func reset() {

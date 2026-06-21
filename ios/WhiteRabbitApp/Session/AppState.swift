@@ -74,6 +74,7 @@ final class AppState: ObservableObject {
 
             session = SessionInfo(userID: resp.userId, nickname: resp.nickname)
             connectSocket(token: resp.accessToken)
+            await loadGroups()
         } catch {
             authError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
@@ -103,11 +104,81 @@ final class AppState: ObservableObject {
         ws.connect()
     }
 
+    // MARK: - Groups
+
+    /// Load the user's groups and register them as conversations + cache member
+    /// names for sender labels.
+    func loadGroups() async {
+        guard let groups = try? await api.listGroups() else { return }
+        for g in groups { registerGroup(g) }
+    }
+
+    private func registerGroup(_ g: GroupView) {
+        for m in g.members { chatStore.remember(peerID: m.id, nickname: m.nickname) }
+        chatStore.upsertGroup(id: g.id, name: g.name, memberIDs: g.members.map { $0.id })
+    }
+
+    /// Create a group and return its id (for navigation).
+    func createGroup(name: String, memberIDs: [String]) async -> String? {
+        guard let g = try? await api.createGroup(name: name, memberIDs: memberIDs) else { return nil }
+        registerGroup(g)
+        return g.id
+    }
+
+    func addGroupMember(groupID: String, user: UserView) async {
+        if let g = try? await api.addGroupMember(groupID: groupID, userID: user.id) { registerGroup(g) }
+    }
+
+    /// Remove a member, or leave the group when removing yourself.
+    func removeGroupMember(groupID: String, userID: String) async {
+        guard let g = try? await api.removeGroupMember(groupID: groupID, userID: userID) else { return }
+        if userID == session?.userID {
+            chatStore.removeConversation(groupID)
+        } else {
+            registerGroup(g)
+        }
+    }
+
+    private func ensureGroupLoaded(_ groupID: String) async {
+        guard chatStore.conversation(groupID) == nil else { return }
+        if let g = try? await api.getGroup(groupID) { registerGroup(g) }
+    }
+
+    // MARK: - Profile
+
+    func myProfile() async -> UserView? { try? await api.me() }
+
+    func updateNickname(_ nickname: String) async -> String? {
+        do {
+            let u = try await api.updateMe(nickname: nickname)
+            session = SessionInfo(userID: u.id, nickname: u.nickname)
+            return nil
+        } catch {
+            return (error as? LocalizedError)?.errorDescription ?? "Could not update nickname"
+        }
+    }
+
+    func changePassword(old: String, new: String) async -> String? {
+        do {
+            try await api.changePassword(old: old, new: new)
+            return nil
+        } catch {
+            return (error as? LocalizedError)?.errorDescription ?? "Could not change password"
+        }
+    }
+
+    func updatePhoto(_ data: Data) async {
+        guard let key = try? await files.uploadPlain(data, mime: "image/jpeg") else { return }
+        _ = try? await api.updateMe(photoURL: key)
+        avatarCache[key] = UIImage(data: data)
+        if let s = session { session = s } // nudge observers
+    }
+
     private func handle(_ event: WSEvent) {
         switch event {
         case let .incoming(messageID, senderID, ciphertext, type, _, createdAtMs):
-            handleIncoming(messageID: messageID, senderID: senderID, ciphertext: ciphertext,
-                           type: type, createdAtMs: createdAtMs)
+            Task { await handleIncoming(messageID: messageID, senderID: senderID, ciphertext: ciphertext,
+                                        type: type, createdAtMs: createdAtMs) }
         case let .ack(clientID, messageID, _):
             log.debug("ack received client=\(clientID, privacy: .public) server=\(messageID, privacy: .public)")
             // Find which conversation this client id belongs to.
@@ -124,23 +195,35 @@ final class AppState: ObservableObject {
     }
 
     private func handleIncoming(messageID: String, senderID: String, ciphertext: Data,
-                               type: Messenger_V1_MessageType, createdAtMs: Int64) {
+                               type: Messenger_V1_MessageType, createdAtMs: Int64) async {
         guard let crypto else { return }
         log.debug("incoming msg=\(messageID, privacy: .public) from=\(senderID, privacy: .public) bytes=\(ciphertext.count)")
+        let plaintext: Data
         do {
-            let plaintext = try crypto.decrypt(ciphertext, from: senderID)
-            let content = MessageContent.decode(plaintext)
-            let msg = ChatMessage(id: messageID, clientID: nil, peerID: senderID,
-                                  text: content.text ?? "", attachments: content.attachments,
-                                  isMine: false, timestamp: Date(timeIntervalSince1970: Double(createdAtMs) / 1000),
-                                  delivery: .delivered)
-            let known = chatStore.conversations.contains { $0.peerID == senderID }
-            chatStore.addMessage(msg, incrementUnread: true)
-            ws?.sendDeliveryReceipt(messageID: messageID, to: senderID)
-            if !known { Task { await resolveNickname(senderID) } }
+            plaintext = try crypto.decrypt(ciphertext, from: senderID)
         } catch {
             log.error("decrypt failed from \(senderID, privacy: .public): \(String(describing: error), privacy: .public)")
+            return
         }
+        let content = MessageContent.decode(plaintext)
+        let isGroup = content.groupID != nil
+        let convID = content.groupID ?? senderID
+
+        // Make sure the group conversation and the sender's name are known before
+        // we file the message (so it renders with the right title/sender label).
+        if isGroup { await ensureGroupLoaded(convID) }
+        if chatStore.nickname(for: senderID).count <= 8 { await resolveNickname(senderID) }
+
+        let known = chatStore.conversation(convID) != nil
+        let msg = ChatMessage(id: messageID, clientID: nil, peerID: convID,
+                              senderID: senderID,
+                              senderName: isGroup ? chatStore.nickname(for: senderID) : nil,
+                              text: content.text ?? "", attachments: content.attachments,
+                              isMine: false, timestamp: Date(timeIntervalSince1970: Double(createdAtMs) / 1000),
+                              delivery: .delivered)
+        chatStore.addMessage(msg, incrementUnread: true)
+        ws?.sendDeliveryReceipt(messageID: messageID, to: senderID)
+        if !known && !isGroup { await resolveNickname(senderID) }
     }
 
     private func resolveNickname(_ userID: String) async {
@@ -164,10 +247,10 @@ final class AppState: ObservableObject {
     /// How long to wait for a server Ack before marking a message as failed.
     private static let sendTimeout: Duration = .seconds(15)
 
-    func send(text: String, to peerID: String) async {
+    func send(text: String, to conversationID: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        await sendContent(.text(trimmed), to: peerID, localText: trimmed, attachments: [])
+        await sendContent(.text(trimmed), to: conversationID, localText: trimmed, attachments: [])
     }
 
     /// A locally-picked attachment awaiting upload.
@@ -181,7 +264,7 @@ final class AppState: ObservableObject {
 
     /// Encrypt and upload a batch of attachments, then send them as a SINGLE
     /// message (one album) with an optional caption.
-    func sendAttachments(_ items: [PendingMedia], caption: String = "", to peerID: String) async {
+    func sendAttachments(_ items: [PendingMedia], caption: String = "", to conversationID: String) async {
         guard !items.isEmpty else { return }
         do {
             var atts: [Attachment] = []
@@ -192,35 +275,58 @@ final class AppState: ObservableObject {
                 atts.append(att)
             }
             let content = MessageContent(text: caption.isEmpty ? nil : caption, attachments: atts)
-            await sendContent(content, to: peerID, localText: caption, attachments: atts)
+            await sendContent(content, to: conversationID, localText: caption, attachments: atts)
         } catch {
             log.error("attachment upload failed: \(String(describing: error), privacy: .public)")
         }
     }
 
-    private func sendContent(_ content: MessageContent, to peerID: String, localText: String,
+    /// Send to a conversation. For a group the message is fanned out per member
+    /// over each member's own 1:1 ratchet (the server stays group-unaware); for a
+    /// 1:1 chat it goes to the single peer.
+    private func sendContent(_ content: MessageContent, to conversationID: String, localText: String,
                              attachments: [Attachment]) async {
-        guard let crypto, let myID = session?.userID, myID != peerID else { return }
+        guard let crypto, let myID = session?.userID else { return }
+
+        var content = content
+        let group = chatStore.conversation(conversationID)
+        let isGroup = group?.isGroup ?? false
+        if isGroup { content.groupID = conversationID }
+
+        let recipients: [String] = isGroup
+            ? (group?.memberIDs ?? []).filter { $0 != myID }
+            : (conversationID == myID ? [] : [conversationID])
 
         let clientID = UUID().uuidString
-        let local = ChatMessage(id: clientID, clientID: clientID, peerID: peerID, text: localText,
-                                attachments: attachments, isMine: true, timestamp: Date(), delivery: .sending)
+        let local = ChatMessage(id: clientID, clientID: clientID, peerID: conversationID,
+                                senderID: myID, text: localText, attachments: attachments,
+                                isMine: true, timestamp: Date(), delivery: .sending)
         chatStore.addMessage(local)
+        guard !recipients.isEmpty else { return }
 
-        do {
-            // Bootstrap a session by fetching the peer's bundle if we don't have one.
-            let bundle = crypto.hasSession(with: peerID) ? nil : try await api.fetchBundle(userID: peerID)
-            let payload = try content.encoded()
-            let (cipher, isPrekey) = try crypto.encrypt(payload, to: peerID, bundle: bundle)
-            let type: Messenger_V1_MessageType = attachments.isEmpty ? .text
-                : (attachments.contains { $0.isMedia } ? .image : .file)
-            log.debug("sending client=\(clientID, privacy: .public) to=\(peerID, privacy: .public) bytes=\(cipher.count) prekey=\(isPrekey) connected=\(self.isConnected)")
-            ws?.sendMessage(recipientID: peerID, ciphertext: cipher, type: type,
-                            isPrekey: isPrekey, clientID: clientID)
-            scheduleSendTimeout(clientID: clientID, peerID: peerID)
-        } catch {
-            log.error("send failed client=\(clientID, privacy: .public): \(String(describing: error), privacy: .public)")
-            chatStore.markFailed(clientID: clientID, peerID: peerID)
+        let type: Messenger_V1_MessageType = attachments.isEmpty ? .text
+            : (attachments.contains { $0.isMedia } ? .image : .file)
+        let payload: Data
+        do { payload = try content.encoded() } catch {
+            chatStore.markFailed(clientID: clientID, peerID: conversationID); return
+        }
+
+        var anySent = false
+        for r in recipients {
+            do {
+                let bundle = crypto.hasSession(with: r) ? nil : try await api.fetchBundle(userID: r)
+                let (cipher, isPrekey) = try crypto.encrypt(payload, to: r, bundle: bundle)
+                ws?.sendMessage(recipientID: r, ciphertext: cipher, type: type,
+                                isPrekey: isPrekey, clientID: clientID)
+                anySent = true
+            } catch {
+                log.error("fan-out to \(r, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+            }
+        }
+        if anySent {
+            scheduleSendTimeout(clientID: clientID, peerID: conversationID)
+        } else {
+            chatStore.markFailed(clientID: clientID, peerID: conversationID)
         }
     }
 
@@ -228,6 +334,18 @@ final class AppState: ObservableObject {
 
     private var blobCache: [String: Data] = [:]
     private var thumbCache: [String: UIImage] = [:]
+    private var avatarCache: [String: UIImage] = [:]
+
+    /// Load a profile avatar (stored unencrypted) by its object key.
+    func avatarImage(forKey key: String) async -> UIImage? {
+        guard !key.isEmpty else { return nil }
+        if let cached = avatarCache[key] { return cached }
+        guard let url = try? await api.downloadURL(key: key),
+              let (data, _) = try? await URLSession.shared.data(from: url),
+              let img = UIImage(data: data) else { return nil }
+        avatarCache[key] = img
+        return img
+    }
 
     /// Generate (and cache) a poster-frame thumbnail for a video attachment.
     func videoThumbnail(_ attachment: Attachment) async -> UIImage? {

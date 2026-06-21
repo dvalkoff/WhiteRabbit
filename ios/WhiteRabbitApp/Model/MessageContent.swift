@@ -24,6 +24,10 @@ struct Attachment: Codable, Equatable, Identifiable {
 struct MessageContent: Codable {
     var text: String?
     var attachments: [Attachment] = []
+    /// Set when this message belongs to a group; nil for a 1:1 message. The
+    /// message is fanned out per-recipient, and each copy carries this id so the
+    /// receiver files it under the group conversation.
+    var groupID: String?
 
     static func text(_ s: String) -> MessageContent { MessageContent(text: s, attachments: []) }
 

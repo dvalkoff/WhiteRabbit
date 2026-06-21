@@ -26,6 +26,14 @@ struct UserView: Codable, Identifiable, Hashable {
     var photoUrl: String?
 }
 
+struct GroupView: Codable, Identifiable, Hashable {
+    let id: String
+    let name: String
+    var photoUrl: String?
+    let ownerId: String
+    let members: [UserView]
+}
+
 struct OneTimePreKeyDTO: Codable {
     let keyId: Int32
     let publicKey: Data

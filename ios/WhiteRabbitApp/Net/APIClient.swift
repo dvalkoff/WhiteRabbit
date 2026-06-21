@@ -74,6 +74,42 @@ final class APIClient {
 
     func getUser(_ userID: String) async throws -> UserView { try await get("/v1/users/\(userID)") }
 
+    // MARK: - Profile
+
+    struct UpdateMeRequest: Encodable { var nickname: String?; var photoUrl: String? }
+
+    func updateMe(nickname: String? = nil, photoURL: String? = nil) async throws -> UserView {
+        try await patch("/v1/me", body: UpdateMeRequest(nickname: nickname, photoUrl: photoURL))
+    }
+
+    struct ChangePasswordRequest: Encodable { let oldPassword: String; let newPassword: String }
+
+    func changePassword(old: String, new: String) async throws {
+        let _: EmptyResponse = try await post("/v1/me/password",
+            body: ChangePasswordRequest(oldPassword: old, newPassword: new), authed: true, allowEmpty: true)
+    }
+
+    // MARK: - Groups
+
+    struct CreateGroupRequest: Encodable { let name: String; let memberIds: [String] }
+    struct AddMemberRequest: Encodable { let userId: String }
+
+    func createGroup(name: String, memberIDs: [String]) async throws -> GroupView {
+        try await post("/v1/groups", body: CreateGroupRequest(name: name, memberIds: memberIDs), authed: true)
+    }
+
+    func listGroups() async throws -> [GroupView] { try await get("/v1/groups") }
+
+    func getGroup(_ id: String) async throws -> GroupView { try await get("/v1/groups/\(id)") }
+
+    func addGroupMember(groupID: String, userID: String) async throws -> GroupView {
+        try await post("/v1/groups/\(groupID)/members", body: AddMemberRequest(userId: userID), authed: true)
+    }
+
+    func removeGroupMember(groupID: String, userID: String) async throws -> GroupView {
+        try await delete("/v1/groups/\(groupID)/members/\(userID)")
+    }
+
     // MARK: - Files
 
     private struct UploadURLResponse: Decodable { let key: String; let url: URL }
@@ -107,6 +143,22 @@ final class APIClient {
         var comps = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
         if !query.isEmpty { comps.queryItems = query }
         return comps.url!
+    }
+
+    private func patch<B: Encodable, R: Decodable>(_ path: String, body: B) async throws -> R {
+        var req = URLRequest(url: makeURL(path))
+        req.httpMethod = "PATCH"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try encoder.encode(body)
+        applyAuth(&req)
+        return try await send(req)
+    }
+
+    private func delete<R: Decodable>(_ path: String) async throws -> R {
+        var req = URLRequest(url: makeURL(path))
+        req.httpMethod = "DELETE"
+        applyAuth(&req)
+        return try await send(req)
     }
 
     private func postEmpty<R: Decodable>(_ path: String) async throws -> R {

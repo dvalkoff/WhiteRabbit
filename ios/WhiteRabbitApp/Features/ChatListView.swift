@@ -3,6 +3,8 @@ import SwiftUI
 struct ChatListView: View {
     @EnvironmentObject var app: AppState
     @State private var showingNewChat = false
+    @State private var showingNewGroup = false
+    @State private var showingProfile = false
     @State private var path: [String] = []
     @State private var peerToOpen: String?
     @State private var searchText = ""
@@ -41,36 +43,39 @@ struct ChatListView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Menu {
-                        Text(app.session?.nickname ?? "")
-                        Button("Log out", role: .destructive) { app.logout() }
-                    } label: {
-                        Image(systemName: "person.crop.circle")
-                    }
+                    Button { showingProfile = true } label: { Image(systemName: "person.crop.circle") }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     HStack {
                         Circle()
                             .fill(app.isConnected ? .green : .gray)
                             .frame(width: 8, height: 8)
-                        Button { showingNewChat = true } label: { Image(systemName: "plus") }
+                        Menu {
+                            Button { showingNewChat = true } label: { Label("New Chat", systemImage: "person") }
+                            Button { showingNewGroup = true } label: { Label("New Group", systemImage: "person.3") }
+                        } label: {
+                            Image(systemName: "square.and.pencil")
+                        }
                     }
                 }
             }
-            // Selecting a person in the sheet sets peerToOpen; once the sheet has
-            // dismissed we push the chat onto the main navigation stack.
-            .sheet(isPresented: $showingNewChat, onDismiss: {
-                if let peer = peerToOpen {
-                    peerToOpen = nil
-                    path.append(peer)
-                }
-            }) {
+            // Selecting a person/creating a group sets peerToOpen; once the sheet
+            // dismisses we push the chat onto the main navigation stack.
+            .sheet(isPresented: $showingNewChat, onDismiss: openPending) {
                 NewChatView { user in
                     app.startConversation(with: user)
                     peerToOpen = user.id
                 }
             }
+            .sheet(isPresented: $showingNewGroup, onDismiss: openPending) {
+                NewGroupView { groupID in peerToOpen = groupID }
+            }
+            .sheet(isPresented: $showingProfile) { ProfileView() }
         }
+    }
+
+    private func openPending() {
+        if let peer = peerToOpen { peerToOpen = nil; path.append(peer) }
     }
 
     private func open(_ peerID: String) {
@@ -137,10 +142,7 @@ private struct ConversationRow: View {
 
     var body: some View {
         HStack {
-            Circle()
-                .fill(Color.accentColor.opacity(0.2))
-                .frame(width: 44, height: 44)
-                .overlay(Text(convo.nickname.prefix(1).uppercased()).font(.headline))
+            AvatarView(photoKey: nil, name: convo.nickname, size: 44, isGroup: convo.isGroup)
             VStack(alignment: .leading, spacing: 2) {
                 Text(convo.nickname).font(.headline)
                 Text(convo.lastMessage).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)

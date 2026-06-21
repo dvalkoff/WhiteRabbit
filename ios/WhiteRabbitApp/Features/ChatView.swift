@@ -6,6 +6,7 @@ private let maxAttachments = 10
 
 struct ChatView: View {
     @EnvironmentObject var app: AppState
+    @Environment(\.dismiss) private var dismiss
     let peerID: String
 
     @State private var draft = ""
@@ -14,8 +15,10 @@ struct ChatView: View {
     @State private var showFileImporter = false
     @State private var mediaContext: MediaViewerContext?
     @State private var fileShareURL: URL?
+    @State private var showGroupInfo = false
 
     private var messages: [ChatMessage] { app.chatStore.messages(for: peerID) }
+    private var isGroup: Bool { app.chatStore.isGroup(peerID) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -23,7 +26,7 @@ struct ChatView: View {
                 ScrollView {
                     LazyVStack(spacing: 8) {
                         ForEach(messages) { msg in
-                            MessageBubble(message: msg,
+                            MessageBubble(message: msg, showSender: isGroup,
                                           onRetry: { Task { await app.resend(message: msg) } },
                                           onOpenMedia: { openMedia($0) },
                                           onOpenFile: { att in Task { fileShareURL = await app.attachmentFileURL(att) } })
@@ -55,6 +58,16 @@ struct ChatView: View {
         }
         .fullScreenCover(item: $mediaContext) { MediaViewer(context: $0) }
         .sheet(item: $fileShareURL) { url in ShareSheet(items: [url]) }
+        .toolbar {
+            if isGroup {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { showGroupInfo = true } label: { Image(systemName: "info.circle") }
+                }
+            }
+        }
+        .sheet(isPresented: $showGroupInfo) {
+            GroupInfoView(groupID: peerID, onLeave: { dismiss() })
+        }
     }
 
     private var inputBar: some View {
@@ -120,6 +133,7 @@ struct ChatView: View {
 
 private struct MessageBubble: View {
     let message: ChatMessage
+    var showSender: Bool = false
     var onRetry: () -> Void
     var onOpenMedia: (Attachment) -> Void
     var onOpenFile: (Attachment) -> Void
@@ -128,6 +142,9 @@ private struct MessageBubble: View {
         HStack {
             if message.isMine { Spacer(minLength: 40) }
             VStack(alignment: message.isMine ? .trailing : .leading, spacing: 4) {
+                if showSender, !message.isMine, let sender = message.senderName {
+                    Text(sender).font(.caption2.bold()).foregroundStyle(.secondary)
+                }
                 if !message.attachments.isEmpty {
                     AlbumView(attachments: message.attachments, isMine: message.isMine,
                               onOpenMedia: onOpenMedia, onOpenFile: onOpenFile)

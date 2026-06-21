@@ -8,10 +8,16 @@ struct ChatMessage: Identifiable, Equatable {
     let id: String          // server message id (or temp client id while sending)
     var clientID: String?   // correlates the Ack for an outgoing message
     let peerID: String
-    let text: String
+    let text: String              // optional caption / text body
+    var attachments: [Attachment] = []
     let isMine: Bool
     let timestamp: Date
     var delivery: DeliveryState
+
+    /// One-line representation for the chat feed / search.
+    var previewText: String {
+        MessageContent(text: text.isEmpty ? nil : text, attachments: attachments).preview
+    }
 }
 
 /// A conversation row in the feed.
@@ -65,14 +71,14 @@ final class ChatStore: ObservableObject {
         messagesByPeer[msg.peerID] = list
 
         if let idx = conversations.firstIndex(where: { $0.peerID == msg.peerID }) {
-            conversations[idx].lastMessage = msg.text
+            conversations[idx].lastMessage = msg.previewText
             conversations[idx].lastMessageAt = msg.timestamp
             if let nickname { conversations[idx].nickname = nickname }
             if incrementUnread { conversations[idx].unread += 1 }
         } else {
             conversations.append(Conversation(peerID: msg.peerID,
                                               nickname: nickname ?? nicknameCache[msg.peerID] ?? String(msg.peerID.prefix(8)),
-                                              lastMessage: msg.text, lastMessageAt: msg.timestamp,
+                                              lastMessage: msg.previewText, lastMessageAt: msg.timestamp,
                                               unread: incrementUnread ? 1 : 0))
         }
         sortFeed()
@@ -82,9 +88,10 @@ final class ChatStore: ObservableObject {
     func applyAck(clientID: String, serverID: String, peerID: String) {
         guard var list = messagesByPeer[peerID] else { return }
         if let idx = list.firstIndex(where: { $0.clientID == clientID }) {
-            var m = list[idx]
+            let m = list[idx]
             list[idx] = ChatMessage(id: serverID, clientID: clientID, peerID: m.peerID,
-                                    text: m.text, isMine: m.isMine, timestamp: m.timestamp, delivery: .sent)
+                                    text: m.text, attachments: m.attachments, isMine: m.isMine,
+                                    timestamp: m.timestamp, delivery: .sent)
             messagesByPeer[peerID] = list
         }
     }
@@ -113,6 +120,34 @@ final class ChatStore: ObservableObject {
 
     func removeMessage(id: String, peerID: String) {
         messagesByPeer[peerID]?.removeAll { $0.id == id }
+    }
+
+    // MARK: - Search
+
+    /// Conversations whose nickname matches the query.
+    func searchConversations(_ query: String) -> [Conversation] {
+        let q = query.lowercased()
+        return conversations.filter { $0.nickname.lowercased().contains(q) }
+    }
+
+    /// A message that matched a local full-text search, with its peer for display.
+    struct MessageHit: Identifiable {
+        let message: ChatMessage
+        var id: String { message.id }
+        var peerID: String { message.peerID }
+    }
+
+    /// Local full-text search across all decrypted message text (server can't do
+    /// this — it only holds ciphertext). Most recent first.
+    func searchMessages(_ query: String, limit: Int = 50) -> [MessageHit] {
+        let q = query.lowercased()
+        var hits: [ChatMessage] = []
+        for (_, list) in messagesByPeer {
+            for m in list where m.text.lowercased().contains(q) {
+                hits.append(m)
+            }
+        }
+        return hits.sorted { $0.timestamp > $1.timestamp }.prefix(limit).map { MessageHit(message: $0) }
     }
 
     func clearUnread(peerID: String) {

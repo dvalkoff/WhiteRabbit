@@ -74,6 +74,22 @@ final class APIClient {
 
     func getUser(_ userID: String) async throws -> UserView { try await get("/v1/users/\(userID)") }
 
+    // MARK: - Files
+
+    private struct UploadURLResponse: Decodable { let key: String; let url: URL }
+    private struct DownloadURLResponse: Decodable { let url: URL }
+
+    func uploadURL() async throws -> (key: String, url: URL) {
+        let r: UploadURLResponse = try await postEmpty("/v1/files/upload-url")
+        return (r.key, r.url)
+    }
+
+    func downloadURL(key: String) async throws -> URL {
+        let r: DownloadURLResponse = try await get("/v1/files/download-url",
+                                                   query: [URLQueryItem(name: "key", value: key)])
+        return r.url
+    }
+
     // MARK: - Plumbing
 
     private struct EmptyResponse: Codable {}
@@ -91,6 +107,13 @@ final class APIClient {
         var comps = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
         if !query.isEmpty { comps.queryItems = query }
         return comps.url!
+    }
+
+    private func postEmpty<R: Decodable>(_ path: String) async throws -> R {
+        var req = URLRequest(url: makeURL(path))
+        req.httpMethod = "POST"
+        applyAuth(&req)
+        return try await send(req)
     }
 
     private func post<B: Encodable, R: Decodable>(_ path: String, body: B, authed: Bool, allowEmpty: Bool = false) async throws -> R {

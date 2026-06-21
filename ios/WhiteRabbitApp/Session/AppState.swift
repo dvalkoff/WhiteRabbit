@@ -1,6 +1,8 @@
+import AVFoundation
 import Combine
 import Foundation
 import OSLog
+import UIKit
 import WhiteRabbitKit
 
 let log = Logger(subsystem: "com.whiterabbit.app", category: "app")
@@ -30,11 +32,14 @@ final class AppState: ObservableObject {
     private let baseURL: URL
     private var ws: WebSocketClient?
     private var crypto: CryptoService?
+    private let files: FileService
     private var cancellables = Set<AnyCancellable>()
 
     init(baseURL: URL) {
         self.baseURL = baseURL
-        self.api = APIClient(baseURL: baseURL)
+        let api = APIClient(baseURL: baseURL)
+        self.api = api
+        self.files = FileService(api: api)
         // ChatStore is a nested ObservableObject; re-publish its changes so views
         // observing AppState refresh when messages/conversations change.
         chatStore.objectWillChange
@@ -124,8 +129,9 @@ final class AppState: ObservableObject {
         log.debug("incoming msg=\(messageID, privacy: .public) from=\(senderID, privacy: .public) bytes=\(ciphertext.count)")
         do {
             let plaintext = try crypto.decrypt(ciphertext, from: senderID)
-            let text = String(data: plaintext, encoding: .utf8) ?? "<unreadable>"
-            let msg = ChatMessage(id: messageID, clientID: nil, peerID: senderID, text: text,
+            let content = MessageContent.decode(plaintext)
+            let msg = ChatMessage(id: messageID, clientID: nil, peerID: senderID,
+                                  text: content.text ?? "", attachments: content.attachments,
                                   isMine: false, timestamp: Date(timeIntervalSince1970: Double(createdAtMs) / 1000),
                                   delivery: .delivered)
             let known = chatStore.conversations.contains { $0.peerID == senderID }
@@ -159,26 +165,116 @@ final class AppState: ObservableObject {
     private static let sendTimeout: Duration = .seconds(15)
 
     func send(text: String, to peerID: String) async {
-        guard let crypto, let myID = session?.userID, myID != peerID else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        await sendContent(.text(trimmed), to: peerID, localText: trimmed, attachments: [])
+    }
+
+    /// A locally-picked attachment awaiting upload.
+    struct PendingMedia {
+        let data: Data
+        let mime: String
+        let name: String
+        var width: Int?
+        var height: Int?
+    }
+
+    /// Encrypt and upload a batch of attachments, then send them as a SINGLE
+    /// message (one album) with an optional caption.
+    func sendAttachments(_ items: [PendingMedia], caption: String = "", to peerID: String) async {
+        guard !items.isEmpty else { return }
+        do {
+            var atts: [Attachment] = []
+            for item in items {
+                let att = try await files.encryptAndUpload(item.data, mime: item.mime, name: item.name,
+                                                           width: item.width, height: item.height)
+                blobCache[att.key] = item.data // render our own attachments without a round-trip
+                atts.append(att)
+            }
+            let content = MessageContent(text: caption.isEmpty ? nil : caption, attachments: atts)
+            await sendContent(content, to: peerID, localText: caption, attachments: atts)
+        } catch {
+            log.error("attachment upload failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    private func sendContent(_ content: MessageContent, to peerID: String, localText: String,
+                             attachments: [Attachment]) async {
+        guard let crypto, let myID = session?.userID, myID != peerID else { return }
 
         let clientID = UUID().uuidString
-        let local = ChatMessage(id: clientID, clientID: clientID, peerID: peerID, text: trimmed,
-                                isMine: true, timestamp: Date(), delivery: .sending)
+        let local = ChatMessage(id: clientID, clientID: clientID, peerID: peerID, text: localText,
+                                attachments: attachments, isMine: true, timestamp: Date(), delivery: .sending)
         chatStore.addMessage(local)
 
         do {
             // Bootstrap a session by fetching the peer's bundle if we don't have one.
             let bundle = crypto.hasSession(with: peerID) ? nil : try await api.fetchBundle(userID: peerID)
-            let (payload, isPrekey) = try crypto.encrypt(Data(trimmed.utf8), to: peerID, bundle: bundle)
-            log.debug("sending client=\(clientID, privacy: .public) to=\(peerID, privacy: .public) bytes=\(payload.count) prekey=\(isPrekey) connected=\(self.isConnected)")
-            ws?.sendMessage(recipientID: peerID, ciphertext: payload, type: .text,
+            let payload = try content.encoded()
+            let (cipher, isPrekey) = try crypto.encrypt(payload, to: peerID, bundle: bundle)
+            let type: Messenger_V1_MessageType = attachments.isEmpty ? .text
+                : (attachments.contains { $0.isMedia } ? .image : .file)
+            log.debug("sending client=\(clientID, privacy: .public) to=\(peerID, privacy: .public) bytes=\(cipher.count) prekey=\(isPrekey) connected=\(self.isConnected)")
+            ws?.sendMessage(recipientID: peerID, ciphertext: cipher, type: type,
                             isPrekey: isPrekey, clientID: clientID)
             scheduleSendTimeout(clientID: clientID, peerID: peerID)
         } catch {
             log.error("send failed client=\(clientID, privacy: .public): \(String(describing: error), privacy: .public)")
             chatStore.markFailed(clientID: clientID, peerID: peerID)
+        }
+    }
+
+    // MARK: - Attachment data (decrypt-on-demand with an in-memory cache)
+
+    private var blobCache: [String: Data] = [:]
+    private var thumbCache: [String: UIImage] = [:]
+
+    /// Generate (and cache) a poster-frame thumbnail for a video attachment.
+    func videoThumbnail(_ attachment: Attachment) async -> UIImage? {
+        if let cached = thumbCache[attachment.key] { return cached }
+        guard let url = await attachmentFileURL(attachment) else { return nil }
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 600, height: 600)
+        do {
+            let cg = try await generator.image(at: CMTime(seconds: 0.1, preferredTimescale: 600)).image
+            let img = UIImage(cgImage: cg)
+            thumbCache[attachment.key] = img
+            return img
+        } catch {
+            return nil
+        }
+    }
+
+    /// Return the decrypted bytes for an attachment, downloading + decrypting on
+    /// first access and caching the result.
+    func attachmentData(_ attachment: Attachment) async -> Data? {
+        if let cached = blobCache[attachment.key] { return cached }
+        do {
+            let data = try await files.downloadAndDecrypt(attachment)
+            blobCache[attachment.key] = data
+            return data
+        } catch {
+            log.error("attachment download failed: \(String(describing: error), privacy: .public)")
+            return nil
+        }
+    }
+
+    /// Decrypt an attachment to a temporary file and return its URL, so it can be
+    /// previewed/saved/shared (QuickLook). The file keeps its original name.
+    func attachmentFileURL(_ attachment: Attachment) async -> URL? {
+        guard let data = await attachmentData(attachment) else { return nil }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("wr-attachments", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // Prefix with the key hash to avoid collisions across distinct blobs.
+        let safeName = attachment.name.isEmpty ? "file" : attachment.name
+        let url = dir.appendingPathComponent("\(abs(attachment.key.hashValue))-\(safeName)")
+        do {
+            try data.write(to: url)
+            return url
+        } catch {
+            log.error("write temp attachment failed: \(String(describing: error), privacy: .public)")
+            return nil
         }
     }
 

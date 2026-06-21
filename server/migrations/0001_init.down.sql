@@ -1,0 +1,5 @@
+DROP TABLE IF EXISTS messages;
+DROP TABLE IF EXISTS one_time_prekeys;
+DROP TABLE IF EXISTS signed_prekeys;
+DROP TABLE IF EXISTS devices;
+DROP TABLE IF EXISTS users;

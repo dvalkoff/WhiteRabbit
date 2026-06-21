@@ -5,11 +5,17 @@ struct ChatListView: View {
     @State private var showingNewChat = false
     @State private var path: [String] = []
     @State private var peerToOpen: String?
+    @State private var searchText = ""
+    @State private var peopleResults: [UserView] = []
+
+    private var isSearching: Bool { !searchText.trimmingCharacters(in: .whitespaces).isEmpty }
 
     var body: some View {
         NavigationStack(path: $path) {
             Group {
-                if app.chatStore.conversations.isEmpty {
+                if isSearching {
+                    searchResults
+                } else if app.chatStore.conversations.isEmpty {
                     ContentUnavailableView("No chats yet",
                                            systemImage: "bubble.left.and.bubble.right",
                                            description: Text("Tap + to start a conversation."))
@@ -20,6 +26,13 @@ struct ChatListView: View {
                         }
                     }
                     .listStyle(.plain)
+                }
+            }
+            .searchable(text: $searchText, prompt: "Search people, chats, messages")
+            .onChange(of: searchText) { _, q in
+                Task {
+                    let trimmed = q.trimmingCharacters(in: .whitespaces)
+                    peopleResults = trimmed.count >= 2 ? await app.searchUsers(trimmed) : []
                 }
             }
             .navigationTitle("Chats")
@@ -58,6 +71,64 @@ struct ChatListView: View {
                 }
             }
         }
+    }
+
+    private func open(_ peerID: String) {
+        searchText = ""
+        path.append(peerID)
+    }
+
+    // Combined results across chats, local messages, and people on the server.
+    private var searchResults: some View {
+        let chats = app.chatStore.searchConversations(searchText)
+        let messageHits = app.chatStore.searchMessages(searchText)
+        let knownIDs = Set(app.chatStore.conversations.map { $0.peerID })
+        let people = peopleResults.filter { !knownIDs.contains($0.id) }
+
+        return List {
+            if !chats.isEmpty {
+                Section("Chats") {
+                    ForEach(chats) { convo in
+                        Button { open(convo.peerID) } label: { ConversationRow(convo: convo) }
+                            .buttonStyle(.plain)
+                    }
+                }
+            }
+            if !messageHits.isEmpty {
+                Section("Messages") {
+                    ForEach(messageHits) { hit in
+                        Button { open(hit.peerID) } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(app.chatStore.nickname(for: hit.peerID)).font(.subheadline.bold())
+                                Text(hit.message.text).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            if !people.isEmpty {
+                Section("People") {
+                    ForEach(people) { user in
+                        Button {
+                            app.startConversation(with: user)
+                            open(user.id)
+                        } label: {
+                            HStack {
+                                Circle().fill(Color.accentColor.opacity(0.2)).frame(width: 36, height: 36)
+                                    .overlay(Text(user.nickname.prefix(1).uppercased()))
+                                Text(user.nickname)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            if chats.isEmpty && messageHits.isEmpty && people.isEmpty {
+                ContentUnavailableView.search(text: searchText)
+            }
+        }
+        .listStyle(.plain)
     }
 }
 

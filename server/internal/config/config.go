@@ -12,10 +12,11 @@ type Config struct {
 	RedisAddr   string
 	JWTSecret   string
 
-	MinioEndpoint  string
-	MinioAccessKey string
-	MinioSecretKey string
-	MinioBucket    string
+	MinioEndpoint       string
+	MinioPublicEndpoint string
+	MinioAccessKey      string
+	MinioSecretKey      string
+	MinioBucket         string
 
 	// InstanceID identifies this server process in logs/metrics. Auto-derived
 	// from hostname+pid when empty. Not required for correctness of routing.
@@ -30,10 +31,11 @@ func Load() (Config, error) {
 		DatabaseURL:    env("WR_DATABASE_URL", "postgres://whiterabbit:whiterabbit@localhost:5432/whiterabbit?sslmode=disable"),
 		RedisAddr:      env("WR_REDIS_ADDR", "localhost:6379"),
 		JWTSecret:      env("WR_JWT_SECRET", ""),
-		MinioEndpoint:  env("WR_MINIO_ENDPOINT", "localhost:9000"),
-		MinioAccessKey: env("WR_MINIO_ACCESS_KEY", "minioadmin"),
-		MinioSecretKey: env("WR_MINIO_SECRET_KEY", "minioadmin"),
-		MinioBucket:    env("WR_MINIO_BUCKET", "wr-blobs"),
+		MinioEndpoint:       env("WR_MINIO_ENDPOINT", "localhost:9000"),
+		MinioPublicEndpoint: env("WR_MINIO_PUBLIC_ENDPOINT", "localhost:9000"),
+		MinioAccessKey:      env("WR_MINIO_ACCESS_KEY", "minioadmin"),
+		MinioSecretKey:      env("WR_MINIO_SECRET_KEY", "minioadmin"),
+		MinioBucket:         env("WR_MINIO_BUCKET", "wr-blobs"),
 		InstanceID:     env("WR_INSTANCE_ID", ""),
 	}
 	if c.JWTSecret == "" {

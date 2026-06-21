@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/whiterabbit/server/internal/auth"
+	"github.com/whiterabbit/server/internal/files"
 	"github.com/whiterabbit/server/internal/store"
 	"github.com/whiterabbit/server/internal/ws"
 )
@@ -26,12 +27,13 @@ type API struct {
 	store  *store.Store
 	tokens *auth.TokenManager
 	hub    *ws.Hub
+	files  *files.Service
 	log    *slog.Logger
 }
 
 // New constructs the API.
-func New(st *store.Store, tokens *auth.TokenManager, hub *ws.Hub, log *slog.Logger) *API {
-	return &API{store: st, tokens: tokens, hub: hub, log: log}
+func New(st *store.Store, tokens *auth.TokenManager, hub *ws.Hub, fs *files.Service, log *slog.Logger) *API {
+	return &API{store: st, tokens: tokens, hub: hub, files: fs, log: log}
 }
 
 // Routes returns the configured HTTP handler.
@@ -57,6 +59,8 @@ func (a *API) Routes() http.Handler {
 		r.Get("/v1/users/search", a.handleSearchUsers)
 		r.Get("/v1/users/{userID}", a.handleGetUser)
 		r.Get("/v1/me", a.handleMe)
+		r.Post("/v1/files/upload-url", a.handleUploadURL)
+		r.Get("/v1/files/download-url", a.handleDownloadURL)
 	})
 
 	// Websocket upgrade authenticates via ?token= (browsers/clients can't set

@@ -51,6 +51,9 @@ services:
       WR_REDIS_ADDR: "redis:6379"
       WR_JWT_SECRET: ${WR_JWT_SECRET:-dev-insecure-change-me}
       WR_MINIO_ENDPOINT: "minio:9000"
+      # Endpoint clients use; presigned URLs are signed for this host. The iOS
+      # simulator reaches MinIO via the host's published port at localhost:9000.
+      WR_MINIO_PUBLIC_ENDPOINT: "localhost:9000"
       WR_MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       WR_MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
       WR_MINIO_BUCKET: "wr-blobs"

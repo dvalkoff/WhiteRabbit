@@ -18,6 +18,7 @@ import (
 	"github.com/whiterabbit/server/internal/api"
 	"github.com/whiterabbit/server/internal/auth"
 	"github.com/whiterabbit/server/internal/config"
+	"github.com/whiterabbit/server/internal/files"
 	"github.com/whiterabbit/server/internal/store"
 	"github.com/whiterabbit/server/internal/ws"
 )
@@ -58,8 +59,20 @@ func main() {
 	hub := ws.NewHub(ctx, rdb, st, log, cfg.InstanceID)
 	defer hub.Close()
 
+	fileSvc, err := files.New(ctx, files.Config{
+		Endpoint:       cfg.MinioEndpoint,
+		PublicEndpoint: cfg.MinioPublicEndpoint,
+		AccessKey:      cfg.MinioAccessKey,
+		SecretKey:      cfg.MinioSecretKey,
+		Bucket:         cfg.MinioBucket,
+	})
+	if err != nil {
+		log.Error("init files", "err", err)
+		os.Exit(1)
+	}
+
 	tokens := auth.NewTokenManager(cfg.JWTSecret)
-	a := api.New(st, tokens, hub, log)
+	a := api.New(st, tokens, hub, fileSvc, log)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

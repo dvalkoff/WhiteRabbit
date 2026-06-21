@@ -1,0 +1,97 @@
+syntax = "proto3";
+
+package messenger.v1;
+
+option go_package = "github.com/whiterabbit/server/internal/pb;pb";
+
+// Envelope is the single frame type sent over the websocket in both directions.
+// Exactly one payload is set via the oneof.
+message Envelope {
+  // Client-generated id used to correlate Ack responses. Optional for
+  // server-originated frames.
+  string id = 1;
+
+  oneof payload {
+    SendMessage send = 10;
+    IncomingMessage incoming = 11;
+    Ack ack = 12;
+    Receipt receipt = 13;
+    Presence presence = 14;
+    Typing typing = 15;
+    Ping ping = 16;
+    Pong pong = 17;
+    Error error = 18;
+  }
+}
+
+// MessageType describes the plaintext kind so the recipient can render it.
+// The server never sees plaintext; this only travels inside encrypted payloads
+// in practice, but type is kept on the envelope for routing/feed previews that
+// are themselves derived client-side.
+enum MessageType {
+  MESSAGE_TYPE_UNSPECIFIED = 0;
+  MESSAGE_TYPE_TEXT = 1;
+  MESSAGE_TYPE_IMAGE = 2;
+  MESSAGE_TYPE_FILE = 3;
+}
+
+// SendMessage is client -> server: deliver this ciphertext to recipient.
+message SendMessage {
+  string recipient_id = 1;
+  // Opaque Double Ratchet ciphertext (the server cannot read it).
+  bytes ciphertext = 2;
+  MessageType type = 3;
+  // True when this is the first message of a new session and carries the
+  // X3DH prekey handshake header (recipient needs it to bootstrap the session).
+  bool is_prekey = 4;
+}
+
+// IncomingMessage is server -> client: a message addressed to the receiver.
+message IncomingMessage {
+  string message_id = 1;
+  string sender_id = 2;
+  bytes ciphertext = 3;
+  MessageType type = 4;
+  bool is_prekey = 5;
+  int64 created_at_unix_ms = 6;
+}
+
+// Ack is server -> client confirming receipt/persistence of a SendMessage,
+// echoing the client envelope id and assigning a server message id.
+message Ack {
+  string client_id = 1;
+  string message_id = 2;
+  int64 created_at_unix_ms = 3;
+}
+
+// Receipt is client -> server (then relayed to the original sender) indicating
+// the message was delivered to / read by the recipient device.
+message Receipt {
+  string message_id = 1;
+  string sender_id = 2; // original sender to notify
+  Kind kind = 3;
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_DELIVERED = 1;
+    KIND_READ = 2;
+  }
+}
+
+message Presence {
+  string user_id = 1;
+  bool online = 2;
+  int64 last_seen_unix_ms = 3;
+}
+
+message Typing {
+  string peer_id = 1; // sender when c->s target; sender id when s->c
+  bool typing = 2;
+}
+
+message Ping {}
+message Pong {}
+
+message Error {
+  string code = 1;
+  string message = 2;
+}

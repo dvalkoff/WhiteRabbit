@@ -59,8 +59,16 @@ func (a *API) Routes() http.Handler {
 		r.Get("/v1/users/search", a.handleSearchUsers)
 		r.Get("/v1/users/{userID}", a.handleGetUser)
 		r.Get("/v1/me", a.handleMe)
+		r.Patch("/v1/me", a.handleUpdateMe)
+		r.Post("/v1/me/password", a.handleChangePassword)
 		r.Post("/v1/files/upload-url", a.handleUploadURL)
 		r.Get("/v1/files/download-url", a.handleDownloadURL)
+
+		r.Post("/v1/groups", a.handleCreateGroup)
+		r.Get("/v1/groups", a.handleListGroups)
+		r.Get("/v1/groups/{groupID}", a.handleGetGroup)
+		r.Post("/v1/groups/{groupID}/members", a.handleAddMember)
+		r.Delete("/v1/groups/{groupID}/members/{userID}", a.handleRemoveMember)
 	})
 
 	// Websocket upgrade authenticates via ?token= (browsers/clients can't set

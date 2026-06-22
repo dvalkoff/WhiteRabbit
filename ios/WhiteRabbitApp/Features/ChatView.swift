@@ -1,3 +1,4 @@
+import AVFoundation
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
@@ -35,6 +36,17 @@ struct ChatView: View {
     @State private var selected: Set<String> = []
     @State private var forwarding: [ChatMessage]?
 
+    // Voice / video note recording
+    enum RecState { case idle, active, locked }
+    @StateObject private var audioRecorder = AudioRecorder()
+    @StateObject private var videoRecorder = VideoNoteRecorder()
+    @State private var recState: RecState = .idle
+    @State private var dragTranslation: CGSize = .zero
+    @State private var pressStart: Date?
+    @State private var holdWork: DispatchWorkItem?
+    @State private var videoPickerItem: PhotosPickerItem?
+    @State private var showVideoPicker = false
+
     private var messages: [ChatMessage] { app.chatStore.messages(for: peerID) }
     private var isGroup: Bool { app.chatStore.isGroup(peerID) }
     private var rows: [ChatRow] { Self.buildRows(messages) }
@@ -60,6 +72,15 @@ struct ChatView: View {
             }
             if selectionMode { selectionBar } else { inputArea }
         }
+        .overlay(alignment: .bottomTrailing) {
+            if recState == .active {
+                LockHint(willLock: willLock)
+                    .offset(x: -22, y: -68 + max(dragTranslation.height, -36))
+                    .allowsHitTesting(false)
+                    .transition(.scale.combined(with: .opacity))
+            }
+        }
+        .animation(.spring(response: 0.3), value: recState)
         .simultaneousGesture(backSwipe)
         .navigationTitle(app.chatStore.nickname(for: peerID))
         .navigationBarTitleDisplayMode(.inline)
@@ -74,6 +95,12 @@ struct ChatView: View {
         .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.item],
                       allowsMultipleSelection: true) { result in
             if case .success(let urls) = result { Task { await sendPickedFiles(urls) } }
+        }
+        .photosPicker(isPresented: $showVideoPicker, selection: $videoPickerItem, matching: .videos)
+        .onChange(of: videoPickerItem) { _, item in
+            guard let item else { return }
+            videoPickerItem = nil
+            Task { await sendPickedVideoNote(item) }
         }
         .fullScreenCover(item: $mediaContext) { MediaViewer(context: $0) }
         .sheet(item: $fileShareURL) { url in ShareSheet(items: [url]) }
@@ -186,23 +213,186 @@ struct ChatView: View {
         .padding(.horizontal).padding(.top, 6)
     }
 
+    private var showSendButton: Bool {
+        editing != nil || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private var inputBar: some View {
         HStack(spacing: 8) {
-            if editing == nil {
+            // Leading: attachments when idle, trash when a recording is locked.
+            if recState == .idle, editing == nil {
                 Menu {
                     Button { showPhotoPicker = true } label: { Label("Photo or Video", systemImage: "photo") }
                     Button { showFileImporter = true } label: { Label("File", systemImage: "doc") }
                 } label: {
-                    Image(systemName: "paperclip").font(.title3)
+                    Image(systemName: "paperclip").font(.title3).foregroundStyle(.secondary)
+                }
+            } else if recState == .locked {
+                Button { cancelRecording() } label: {
+                    Image(systemName: "trash").font(.title3).foregroundStyle(.red)
                 }
             }
-            TextField("Message", text: $draft, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-            Button { commit() } label: { Image(systemName: "arrow.up.circle.fill").font(.title2) }
-                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+            // Center: the text field, or the recording indicator (inline).
+            if recState == .idle {
+                TextField("Message", text: $draft, axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+            } else {
+                recordingIndicator
+            }
+
+            // Trailing: send when there's text / locked recording, else the
+            // press-and-hold recorder button (stays mounted so its gesture lives).
+            if recState == .locked || showSendButton {
+                Button { recState == .locked ? finishRecording() : commit() } label: {
+                    Image(systemName: "arrow.up.circle.fill").font(.title)
+                }
+            } else {
+                recorderButton
+            }
         }
         .padding([.horizontal, .bottom])
         .padding(.top, 4)
+        .animation(.easeInOut(duration: 0.18), value: recState)
+    }
+
+    private var recordingIndicator: some View {
+        HStack(spacing: 10) {
+            PulsingDot()
+            Text(timeString(app.recorderMode == .voice ? audioRecorder.elapsed : videoRecorder.elapsed))
+                .font(.callout.monospacedDigit())
+            if app.recorderMode == .voice {
+                LiveLevel(level: audioRecorder.level).frame(height: 22)
+            } else if VideoNoteRecorder.isAvailable {
+                CameraPreview(session: videoRecorder.session).frame(width: 30, height: 30).clipShape(Circle())
+            }
+            Spacer(minLength: 0)
+            if recState == .active {
+                Text(willCancel ? "release to cancel" : (willLock ? "release to lock" : "‹ slide to cancel"))
+                    .font(.footnote).foregroundStyle(willCancel ? .red : .secondary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 36)
+    }
+
+    // Tap toggles voice/video mode; press-and-hold records.
+    private var recorderButton: some View {
+        ZStack {
+            Circle().fill(Color.accentColor).frame(width: 40, height: 40)
+            Image(systemName: app.recorderMode == .voice ? "mic.fill" : "video.fill")
+                .foregroundStyle(.white)
+        }
+        .scaleEffect(recState == .active ? 1.5 : 1)
+        .offset(recorderButtonOffset)
+        .animation(.interactiveSpring(response: 0.25), value: dragTranslation)
+        .animation(.spring(response: 0.3), value: recState)
+        .gesture(pressGesture)
+    }
+
+    /// While recording, the button follows the finger (clamped) toward the lock
+    /// above and the cancel zone to the left.
+    private var recorderButtonOffset: CGSize {
+        guard recState == .active else { return .zero }
+        return CGSize(width: max(-140, min(0, dragTranslation.width)),
+                      height: max(-80, min(0, dragTranslation.height)))
+    }
+
+    /// One gesture handles everything: a quick tap toggles the mode, a hold
+    /// (>0.3s) starts recording, and the release decides send / lock / cancel.
+    private var pressGesture: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { v in
+                if pressStart == nil {
+                    pressStart = Date()
+                    let work = DispatchWorkItem {
+                        if pressStart != nil, recState == .idle { beginRecording() }
+                    }
+                    holdWork = work
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+                }
+                if recState == .active { dragTranslation = v.translation }
+            }
+            .onEnded { v in
+                holdWork?.cancel(); holdWork = nil
+                let held = Date().timeIntervalSince(pressStart ?? Date())
+                pressStart = nil
+                if recState == .active {
+                    if v.translation.height < -80 { recState = .locked }
+                    else if v.translation.width < -100 { cancelRecording() }
+                    else { finishRecording() }
+                } else if held < 0.3 {
+                    app.toggleRecorderMode()
+                }
+                dragTranslation = .zero
+            }
+    }
+
+    private var willCancel: Bool { recState == .active && dragTranslation.width < -100 }
+    private var willLock: Bool { recState == .active && dragTranslation.height < -80 }
+
+    // MARK: - Recording handlers
+
+    private func beginRecording() {
+        switch app.recorderMode {
+        case .voice:
+            recState = .active
+            Task {
+                guard await AudioRecorder.requestPermission() else { recState = .idle; return }
+                do { try audioRecorder.start() } catch { recState = .idle }
+            }
+        case .video:
+            guard VideoNoteRecorder.isAvailable else { showVideoPicker = true; return }
+            recState = .active
+            Task {
+                guard await VideoNoteRecorder.requestPermission() else { recState = .idle; return }
+                videoRecorder.configure(); videoRecorder.startSession(); videoRecorder.startRecording()
+            }
+        }
+    }
+
+    private func finishRecording() {
+        let mode = app.recorderMode
+        recState = .idle
+        switch mode {
+        case .voice:
+            guard let res = audioRecorder.stop(), res.durationMs > 600 else { return } // ignore < 0.6s
+            let pm = AppState.PendingMedia(data: res.data, mime: "audio/m4a", name: "voice.m4a",
+                                           durationMs: res.durationMs, waveform: res.waveform)
+            Task { await app.sendAttachments([pm], to: peerID) }
+        case .video:
+            Task {
+                let url = await videoRecorder.stopRecording()
+                videoRecorder.stopSession()
+                guard let url, let data = try? Data(contentsOf: url) else { return }
+                let ms = Int(CMTimeGetSeconds(AVURLAsset(url: url).duration) * 1000)
+                try? FileManager.default.removeItem(at: url)
+                let pm = AppState.PendingMedia(data: data, mime: "video/mp4", name: "note.mp4",
+                                               durationMs: ms, round: true)
+                await app.sendAttachments([pm], to: peerID)
+            }
+        }
+    }
+
+    private func cancelRecording() {
+        if app.recorderMode == .voice { audioRecorder.cancel() }
+        else { videoRecorder.cancel(); videoRecorder.stopSession() }
+        recState = .idle
+    }
+
+    private func sendPickedVideoNote(_ item: PhotosPickerItem) async {
+        guard let data = try? await item.loadTransferable(type: Data.self) else { return }
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("pick-\(UUID().uuidString).mp4")
+        try? data.write(to: tmp)
+        let ms = Int(CMTimeGetSeconds(AVURLAsset(url: tmp).duration) * 1000)
+        try? FileManager.default.removeItem(at: tmp)
+        let pm = AppState.PendingMedia(data: data, mime: "video/mp4", name: "note.mp4",
+                                       durationMs: ms, round: true)
+        await app.sendAttachments([pm], to: peerID)
+    }
+
+    private func timeString(_ s: TimeInterval) -> String {
+        let t = Int(s); return String(format: "%d:%02d", t / 60, t % 60)
     }
 
     // MARK: - Actions
@@ -315,6 +505,60 @@ private struct SwipeToReply<Content: View>: View {
     }
 }
 
+/// Floating lock affordance shown above the recorder button while holding to
+/// record. The button rises toward it; crossing the threshold snaps to locked.
+private struct LockHint: View {
+    let willLock: Bool
+    @State private var bob = false
+
+    var body: some View {
+        VStack(spacing: 5) {
+            Image(systemName: willLock ? "lock.fill" : "lock.open.fill")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(willLock ? .white : Color.accentColor)
+                .frame(width: 36, height: 36)
+                .background(willLock ? Color.accentColor : Color(.systemGray5), in: Circle())
+                .scaleEffect(willLock ? 1.15 : 1)
+            if !willLock {
+                Image(systemName: "chevron.up")
+                    .font(.caption2.bold()).foregroundStyle(.secondary)
+                    .offset(y: bob ? -3 : 1)
+            }
+        }
+        .animation(.spring(response: 0.3), value: willLock)
+        .onAppear { withAnimation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true)) { bob = true } }
+    }
+}
+
+private struct PulsingDot: View {
+    @State private var on = false
+    var body: some View {
+        Circle().fill(.red).frame(width: 12, height: 12)
+            .opacity(on ? 1 : 0.25)
+            .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true), value: on)
+            .onAppear { on = true }
+    }
+}
+
+private struct LiveLevel: View {
+    let level: Float
+    private let variation: [CGFloat] = [0.5, 0.8, 1, 0.7, 0.9, 1, 0.6, 0.85, 1, 0.7, 0.55, 0.9]
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(0..<variation.count, id: \.self) { i in
+                Capsule().fill(Color.accentColor.opacity(0.85))
+                    .frame(width: 3, height: barHeight(i))
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .animation(.easeOut(duration: 0.1), value: level)
+    }
+    private func barHeight(_ i: Int) -> CGFloat {
+        let l = CGFloat(max(0.06, min(1, CGFloat(level))))
+        return max(3, 22 * l * variation[i])
+    }
+}
+
 private struct DayHeader: View {
     let date: Date
     var body: some View {
@@ -391,7 +635,11 @@ private struct MessageBubble<Menu: View>: View {
     }
 
     @ViewBuilder private var content: some View {
-        if !message.attachments.isEmpty {
+        if message.attachments.count == 1, message.attachments[0].isVoice {
+            VoiceBubble(attachment: message.attachments[0], isMine: message.isMine)
+        } else if message.attachments.count == 1, message.attachments[0].isVideoNote {
+            VideoNoteBubble(attachment: message.attachments[0])
+        } else if !message.attachments.isEmpty {
             AlbumView(attachments: message.attachments, isMine: message.isMine,
                       onOpenMedia: onOpenMedia, onOpenFile: onOpenFile)
         }

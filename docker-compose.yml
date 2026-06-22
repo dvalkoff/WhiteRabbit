@@ -42,6 +42,20 @@ services:
       timeout: 3s
       retries: 10
 
+  # TURN/STUN for WebRTC NAT traversal. Uses the shared-secret (REST) auth scheme;
+  # the server mints time-limited credentials at /v1/turn. host networking keeps
+  # the relay port range reachable without enumerating it.
+  coturn:
+    image: coturn/coturn:latest
+    network_mode: host
+    command: >
+      -n --no-cli --no-tls --no-dtls
+      --listening-port=3478
+      --realm=${WR_TURN_REALM:-whiterabbit}
+      --use-auth-secret --static-auth-secret=${TURN_SECRET:-dev-turn-secret}
+      --min-port=49160 --max-port=49200
+      --listening-ip=0.0.0.0
+
   server:
     build:
       context: ./server
@@ -57,6 +71,10 @@ services:
       WR_MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       WR_MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
       WR_MINIO_BUCKET: "wr-blobs"
+      # Clients (the iOS simulator) reach coturn on the host at localhost:3478.
+      WR_TURN_HOST: "localhost:3478"
+      WR_TURN_REALM: ${WR_TURN_REALM:-whiterabbit}
+      WR_TURN_SECRET: ${TURN_SECRET:-dev-turn-secret}
       WR_INSTANCE_ID: "" # auto if empty
     depends_on:
       postgres:

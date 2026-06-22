@@ -18,6 +18,10 @@ type Config struct {
 	MinioSecretKey      string
 	MinioBucket         string
 
+	TURNHost   string // client-reachable host:port, e.g. localhost:3478
+	TURNRealm  string
+	TURNSecret string
+
 	// InstanceID identifies this server process in logs/metrics. Auto-derived
 	// from hostname+pid when empty. Not required for correctness of routing.
 	InstanceID string
@@ -36,7 +40,10 @@ func Load() (Config, error) {
 		MinioAccessKey:      env("WR_MINIO_ACCESS_KEY", "minioadmin"),
 		MinioSecretKey:      env("WR_MINIO_SECRET_KEY", "minioadmin"),
 		MinioBucket:         env("WR_MINIO_BUCKET", "wr-blobs"),
-		InstanceID:     env("WR_INSTANCE_ID", ""),
+		TURNHost:            env("WR_TURN_HOST", "localhost:3478"),
+		TURNRealm:           env("WR_TURN_REALM", "whiterabbit"),
+		TURNSecret:          env("WR_TURN_SECRET", "dev-turn-secret"),
+		InstanceID:          env("WR_INSTANCE_ID", ""),
 	}
 	if c.JWTSecret == "" {
 		return Config{}, fmt.Errorf("WR_JWT_SECRET is required")

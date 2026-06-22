@@ -73,6 +73,7 @@ func main() {
 
 	tokens := auth.NewTokenManager(cfg.JWTSecret)
 	a := api.New(st, tokens, hub, fileSvc, log)
+	a.ConfigureTURN(cfg.TURNHost, cfg.TURNRealm, cfg.TURNSecret)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

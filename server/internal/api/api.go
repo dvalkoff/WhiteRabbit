@@ -29,11 +29,20 @@ type API struct {
 	hub    *ws.Hub
 	files  *files.Service
 	log    *slog.Logger
+
+	turnHost, turnRealm, turnSecret string
 }
 
 // New constructs the API.
 func New(st *store.Store, tokens *auth.TokenManager, hub *ws.Hub, fs *files.Service, log *slog.Logger) *API {
 	return &API{store: st, tokens: tokens, hub: hub, files: fs, log: log}
+}
+
+// ConfigureTURN sets the TURN/STUN parameters used by the /v1/turn endpoint.
+func (a *API) ConfigureTURN(host, realm, secret string) {
+	a.turnHost = host
+	a.turnRealm = realm
+	a.turnSecret = secret
 }
 
 // Routes returns the configured HTTP handler.
@@ -63,6 +72,7 @@ func (a *API) Routes() http.Handler {
 		r.Post("/v1/me/password", a.handleChangePassword)
 		r.Post("/v1/files/upload-url", a.handleUploadURL)
 		r.Get("/v1/files/download-url", a.handleDownloadURL)
+		r.Get("/v1/turn", a.handleTURN)
 
 		r.Post("/v1/groups", a.handleCreateGroup)
 		r.Get("/v1/groups", a.handleListGroups)

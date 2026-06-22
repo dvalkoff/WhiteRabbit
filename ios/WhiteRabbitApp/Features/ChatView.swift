@@ -60,7 +60,12 @@ struct ChatView: View {
                         ForEach(rows) { row in
                             switch row {
                             case .day(let d): DayHeader(date: d)
-                            case .message(let m): messageRow(m).id(m.id)
+                            case .message(let m):
+                                if let log = m.callLog {
+                                    CallLogRow(log: log, time: m.timestamp).id(m.id)
+                                } else {
+                                    messageRow(m).id(m.id)
+                                }
                             }
                         }
                     }
@@ -173,6 +178,12 @@ struct ChatView: View {
         } else if isGroup {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showGroupInfo = true } label: { Image(systemName: "info.circle") }
+            }
+        } else {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { app.callManager.startCall(peerID: peerID) } label: {
+                    Image(systemName: "phone")
+                }
             }
         }
     }
@@ -556,6 +567,24 @@ private struct LiveLevel: View {
     private func barHeight(_ i: Int) -> CGFloat {
         let l = CGFloat(max(0.06, min(1, CGFloat(level))))
         return max(3, 22 * l * variation[i])
+    }
+}
+
+/// Centered system-style call entry (Telegram-like) with icon, label and time.
+private struct CallLogRow: View {
+    let log: CallLog
+    let time: Date
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: log.icon)
+                .font(.caption).foregroundStyle(log.isMissed ? .red : .secondary)
+            Text(log.text).font(.caption).foregroundStyle(log.isMissed ? .red : .secondary)
+            Text(timeFormatter.string(from: time)).font(.caption2).foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 6)
+        .background(Color(.systemGray6), in: Capsule())
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 2)
     }
 }
 

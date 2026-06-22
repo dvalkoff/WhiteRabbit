@@ -19,6 +19,7 @@ struct WhiteRabbitApp: App {
         WindowGroup {
             RootView()
                 .environmentObject(app)
+                .environmentObject(app.callManager)
         }
     }
 }

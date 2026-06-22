@@ -3,6 +3,7 @@ import Combine
 import Foundation
 import OSLog
 import UIKit
+import WebRTC
 import WhiteRabbitKit
 
 let log = Logger(subsystem: "com.whiterabbit.app", category: "app")
@@ -37,6 +38,7 @@ final class AppState: ObservableObject {
     }
 
     let chatStore = ChatStore()
+    let callManager = CallManager()
 
     private let api: APIClient
     private let baseURL: URL
@@ -55,6 +57,15 @@ final class AppState: ObservableObject {
         chatStore.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+
+        // Wire the call engine: send signals over the E2E channel, fetch ICE
+        // servers from the backend, resolve peer names for the call UI.
+        callManager.onSignal = { [weak self] signal, peerID in self?.sendCallSignal(signal, to: peerID) }
+        callManager.fetchICE = { [weak self] in await self?.iceServers() ?? [] }
+        callManager.nameFor = { [weak self] id in self?.chatStore.nickname(for: id) ?? id }
+        callManager.onCallEnded = { [weak self] peerID, callLog in
+            self?.chatStore.addCallLog(peerID: peerID, callLog, at: Date())
+        }
     }
 
     var myUserID: String? { session?.userID }
@@ -91,6 +102,7 @@ final class AppState: ObservableObject {
     }
 
     func logout() {
+        callManager.endLocally()
         ws?.disconnect()
         ws = nil
         crypto = nil
@@ -219,6 +231,12 @@ final class AppState: ObservableObject {
         let isGroup = content.groupID != nil
         let convID = content.groupID ?? senderID
         let when = Date(timeIntervalSince1970: Double(createdAtMs) / 1000)
+
+        // Call signaling is routed to the call engine, never shown as a message.
+        if let signal = content.call {
+            callManager.handle(signal: signal, from: senderID)
+            return
+        }
 
         // Control messages mutate an existing message rather than adding one.
         if let target = content.deleteOf {
@@ -370,6 +388,27 @@ final class AppState: ObservableObject {
             }
         }
         return anySent
+    }
+
+    // MARK: - Calls
+
+    /// Send a WebRTC signaling message E2E to the peer (no chat bubble).
+    func sendCallSignal(_ signal: CallSignal, to peerID: String) {
+        var content = MessageContent()
+        content.call = signal
+        guard let payload = try? content.encoded() else { return }
+        Task { await deliver(payload: payload, type: .text, clientID: UUID().uuidString, to: [peerID]) }
+    }
+
+    /// Fetch ICE servers (STUN/TURN) from the backend for a call.
+    func iceServers() async -> [RTCIceServer] {
+        guard let servers = try? await api.turnServers() else { return [] }
+        return servers.map { s in
+            if let u = s.username, let c = s.credential {
+                return RTCIceServer(urlStrings: s.urls, username: u, credential: c)
+            }
+            return RTCIceServer(urlStrings: s.urls)
+        }
     }
 
     // MARK: - Edit / delete / forward

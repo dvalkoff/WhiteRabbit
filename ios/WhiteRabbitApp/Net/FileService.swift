@@ -14,7 +14,9 @@ final class FileService {
     /// Encrypt `data`, upload the ciphertext, and return the attachment metadata
     /// to embed in the E2E message.
     func encryptAndUpload(_ data: Data, mime: String, name: String,
-                          width: Int? = nil, height: Int? = nil) async throws -> Attachment {
+                          width: Int? = nil, height: Int? = nil,
+                          durationMs: Int? = nil, waveform: [Int]? = nil,
+                          round: Bool? = nil) async throws -> Attachment {
         let key = SymmetricKey(size: .bits256)
         let sealed = try ChaChaPoly.seal(data, using: key)
         let blob = sealed.combined // nonce + ciphertext + tag
@@ -29,7 +31,8 @@ final class FileService {
 
         let keyB64 = key.withUnsafeBytes { Data($0) }.base64EncodedString()
         return Attachment(key: objectKey, keyB64: keyB64, mime: mime, name: name,
-                          size: data.count, width: width, height: height)
+                          size: data.count, width: width, height: height,
+                          durationMs: durationMs, waveform: waveform, round: round)
     }
 
     /// Upload bytes WITHOUT encryption (used for profile avatars, which need to be

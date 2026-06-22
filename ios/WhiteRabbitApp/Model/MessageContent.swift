@@ -11,11 +11,18 @@ struct Attachment: Codable, Equatable, Identifiable {
     var size: Int
     var width: Int?
     var height: Int?
+    var durationMs: Int?   // voice/video note length
+    var waveform: [Int]?   // 0–100 amplitude bars for voice messages
+    var round: Bool?       // true for circular video notes
 
     var id: String { key }
     var isImage: Bool { mime.hasPrefix("image/") }
+    var isAudio: Bool { mime.hasPrefix("audio/") }
     var isVideo: Bool { mime.hasPrefix("video/") }
-    var isMedia: Bool { isImage || isVideo }
+    var isVoice: Bool { isAudio }
+    var isVideoNote: Bool { isVideo && round == true }
+    /// "Media" = shown in the swipeable gallery. Voice and video notes are not.
+    var isMedia: Bool { (isImage || isVideo) && round != true }
 }
 
 /// A quoted reference to another message, carried with a reply.
@@ -58,7 +65,9 @@ struct MessageContent: Codable {
     var preview: String {
         if !attachments.isEmpty {
             let label: String
-            if attachments.allSatisfy({ $0.isImage }) { label = attachments.count > 1 ? "📷 \(attachments.count) Photos" : "📷 Photo" }
+            if attachments.count == 1, attachments[0].isVoice { label = "🎤 Voice message" }
+            else if attachments.count == 1, attachments[0].isVideoNote { label = "⭕ Video message" }
+            else if attachments.allSatisfy({ $0.isImage }) { label = attachments.count > 1 ? "📷 \(attachments.count) Photos" : "📷 Photo" }
             else if attachments.allSatisfy({ $0.isVideo }) { label = attachments.count > 1 ? "🎬 \(attachments.count) Videos" : "🎬 Video" }
             else if attachments.allSatisfy({ $0.isMedia }) { label = "🖼 \(attachments.count) Media" }
             else if attachments.count > 1 { label = "📎 \(attachments.count) Files" }

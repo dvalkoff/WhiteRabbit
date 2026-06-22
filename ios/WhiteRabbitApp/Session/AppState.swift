@@ -7,6 +7,9 @@ import WhiteRabbitKit
 
 let log = Logger(subsystem: "com.whiterabbit.app", category: "app")
 
+/// Which kind of note the chat input records. Global across chats, persisted.
+enum RecorderMode: String { case voice, video }
+
 struct SessionInfo: Equatable {
     let userID: String
     let nickname: String
@@ -25,6 +28,13 @@ final class AppState: ObservableObject {
     @Published var isConnected = false
     @Published var authError: String?
     @Published var isBusy = false
+    @Published var recorderMode: RecorderMode =
+        RecorderMode(rawValue: UserDefaults.standard.string(forKey: "recorderMode") ?? "") ?? .voice
+
+    func toggleRecorderMode() {
+        recorderMode = recorderMode == .voice ? .video : .voice
+        UserDefaults.standard.set(recorderMode.rawValue, forKey: "recorderMode")
+    }
 
     let chatStore = ChatStore()
 
@@ -269,13 +279,16 @@ final class AppState: ObservableObject {
         await sendContent(content, to: conversationID, localText: trimmed, attachments: [])
     }
 
-    /// A locally-picked attachment awaiting upload.
+    /// A locally-picked or recorded attachment awaiting upload.
     struct PendingMedia {
         let data: Data
         let mime: String
         let name: String
         var width: Int?
         var height: Int?
+        var durationMs: Int?
+        var waveform: [Int]?
+        var round: Bool?
     }
 
     /// Encrypt and upload a batch of attachments, then send them as a SINGLE
@@ -286,7 +299,9 @@ final class AppState: ObservableObject {
             var atts: [Attachment] = []
             for item in items {
                 let att = try await files.encryptAndUpload(item.data, mime: item.mime, name: item.name,
-                                                           width: item.width, height: item.height)
+                                                           width: item.width, height: item.height,
+                                                           durationMs: item.durationMs, waveform: item.waveform,
+                                                           round: item.round)
                 blobCache[att.key] = item.data // render our own attachments without a round-trip
                 atts.append(att)
             }

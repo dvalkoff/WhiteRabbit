@@ -33,6 +33,10 @@
     <array>
         <string>UIInterfaceOrientationPortrait</string>
     </array>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>WhiteRabbit needs the microphone to record voice and video messages.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>WhiteRabbit needs the camera to record video messages.</string>
     <!-- Dev only: allow cleartext HTTP to localhost for the local backend. -->
     <key>NSAppTransportSecurity</key>
     <dict>

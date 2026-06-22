@@ -327,7 +327,7 @@ private final class VideoPlayerModel: ObservableObject {
 }
 
 /// Hosts an AVPlayerLayer so we can overlay our own controls on top.
-private struct PlayerLayerView: UIViewRepresentable {
+struct PlayerLayerView: UIViewRepresentable {
     let player: AVPlayer
     func makeUIView(context: Context) -> PlayerUIView {
         let v = PlayerUIView()
@@ -338,7 +338,7 @@ private struct PlayerLayerView: UIViewRepresentable {
     func updateUIView(_ uiView: PlayerUIView, context: Context) {}
 }
 
-private final class PlayerUIView: UIView {
+final class PlayerUIView: UIView {
     override class var layerClass: AnyClass { AVPlayerLayer.self }
     var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
 }

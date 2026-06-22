@@ -208,6 +208,19 @@ final class AppState: ObservableObject {
         let content = MessageContent.decode(plaintext)
         let isGroup = content.groupID != nil
         let convID = content.groupID ?? senderID
+        let when = Date(timeIntervalSince1970: Double(createdAtMs) / 1000)
+
+        // Control messages mutate an existing message rather than adding one.
+        if let target = content.deleteOf {
+            chatStore.markDeleted(messageID: target, peerID: convID)
+            ws?.sendDeliveryReceipt(messageID: messageID, to: senderID)
+            return
+        }
+        if let target = content.editOf {
+            chatStore.applyEdit(messageID: target, newText: content.text ?? "", peerID: convID, at: when)
+            ws?.sendDeliveryReceipt(messageID: messageID, to: senderID)
+            return
+        }
 
         // Make sure the group conversation and the sender's name are known before
         // we file the message (so it renders with the right title/sender label).
@@ -215,12 +228,13 @@ final class AppState: ObservableObject {
         if chatStore.nickname(for: senderID).count <= 8 { await resolveNickname(senderID) }
 
         let known = chatStore.conversation(convID) != nil
-        let msg = ChatMessage(id: messageID, clientID: nil, peerID: convID,
+        var msg = ChatMessage(id: messageID, clientID: nil, peerID: convID,
                               senderID: senderID,
                               senderName: isGroup ? chatStore.nickname(for: senderID) : nil,
                               text: content.text ?? "", attachments: content.attachments,
-                              isMine: false, timestamp: Date(timeIntervalSince1970: Double(createdAtMs) / 1000),
-                              delivery: .delivered)
+                              isMine: false, timestamp: when, delivery: .delivered)
+        msg.replyTo = content.replyTo
+        msg.forwarded = content.forwarded
         chatStore.addMessage(msg, incrementUnread: true)
         ws?.sendDeliveryReceipt(messageID: messageID, to: senderID)
         if !known && !isGroup { await resolveNickname(senderID) }
@@ -247,10 +261,12 @@ final class AppState: ObservableObject {
     /// How long to wait for a server Ack before marking a message as failed.
     private static let sendTimeout: Duration = .seconds(15)
 
-    func send(text: String, to conversationID: String) async {
+    func send(text: String, to conversationID: String, replyingTo: ChatMessage? = nil) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        await sendContent(.text(trimmed), to: conversationID, localText: trimmed, attachments: [])
+        var content = MessageContent.text(trimmed)
+        if let r = replyingTo { content.replyTo = replyPreview(for: r) }
+        await sendContent(content, to: conversationID, localText: trimmed, attachments: [])
     }
 
     /// A locally-picked attachment awaiting upload.
@@ -286,47 +302,111 @@ final class AppState: ObservableObject {
     /// 1:1 chat it goes to the single peer.
     private func sendContent(_ content: MessageContent, to conversationID: String, localText: String,
                              attachments: [Attachment]) async {
-        guard let crypto, let myID = session?.userID else { return }
+        guard let myID = session?.userID else { return }
 
         var content = content
-        let group = chatStore.conversation(conversationID)
-        let isGroup = group?.isGroup ?? false
-        if isGroup { content.groupID = conversationID }
-
-        let recipients: [String] = isGroup
-            ? (group?.memberIDs ?? []).filter { $0 != myID }
-            : (conversationID == myID ? [] : [conversationID])
+        if chatStore.isGroup(conversationID) { content.groupID = conversationID }
 
         let clientID = UUID().uuidString
-        let local = ChatMessage(id: clientID, clientID: clientID, peerID: conversationID,
+        var local = ChatMessage(id: clientID, clientID: clientID, peerID: conversationID,
                                 senderID: myID, text: localText, attachments: attachments,
                                 isMine: true, timestamp: Date(), delivery: .sending)
+        local.replyTo = content.replyTo
+        local.forwarded = content.forwarded
         chatStore.addMessage(local)
+
+        let recipients = recipients(for: conversationID)
         guard !recipients.isEmpty else { return }
 
         let type: Messenger_V1_MessageType = attachments.isEmpty ? .text
             : (attachments.contains { $0.isMedia } ? .image : .file)
-        let payload: Data
-        do { payload = try content.encoded() } catch {
+        guard let payload = try? content.encoded() else {
             chatStore.markFailed(clientID: clientID, peerID: conversationID); return
         }
+        if await deliver(payload: payload, type: type, clientID: clientID, to: recipients) {
+            scheduleSendTimeout(clientID: clientID, peerID: conversationID)
+        } else {
+            chatStore.markFailed(clientID: clientID, peerID: conversationID)
+        }
+    }
 
+    /// Recipients a conversation fans out to (group members minus me, or the peer).
+    private func recipients(for conversationID: String) -> [String] {
+        guard let myID = session?.userID else { return [] }
+        if let g = chatStore.conversation(conversationID), g.isGroup {
+            return g.memberIDs.filter { $0 != myID }
+        }
+        return conversationID == myID ? [] : [conversationID]
+    }
+
+    /// Encrypt a payload to each recipient (per-recipient ratchet) and send it.
+    @discardableResult
+    private func deliver(payload: Data, type: Messenger_V1_MessageType, clientID: String, to recipients: [String]) async -> Bool {
+        guard let crypto else { return false }
         var anySent = false
         for r in recipients {
             do {
                 let bundle = crypto.hasSession(with: r) ? nil : try await api.fetchBundle(userID: r)
                 let (cipher, isPrekey) = try crypto.encrypt(payload, to: r, bundle: bundle)
-                ws?.sendMessage(recipientID: r, ciphertext: cipher, type: type,
-                                isPrekey: isPrekey, clientID: clientID)
+                ws?.sendMessage(recipientID: r, ciphertext: cipher, type: type, isPrekey: isPrekey, clientID: clientID)
                 anySent = true
             } catch {
-                log.error("fan-out to \(r, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+                log.error("deliver to \(r, privacy: .public) failed: \(String(describing: error), privacy: .public)")
             }
         }
-        if anySent {
-            scheduleSendTimeout(clientID: clientID, peerID: conversationID)
-        } else {
-            chatStore.markFailed(clientID: clientID, peerID: conversationID)
+        return anySent
+    }
+
+    // MARK: - Edit / delete / forward
+
+    private func replyPreview(for m: ChatMessage) -> ReplyPreview {
+        ReplyPreview(messageID: m.id, sender: senderDisplay(m), text: String(m.previewText.prefix(120)))
+    }
+
+    private func senderDisplay(_ m: ChatMessage) -> String {
+        if m.isMine { return session?.nickname ?? "You" }
+        return m.senderName ?? chatStore.nickname(for: m.senderID)
+    }
+
+    /// Edit your own message's text, for everyone.
+    func editMessage(_ message: ChatMessage, newText: String) async {
+        let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard message.isMine, message.delivery != .sending, !trimmed.isEmpty else { return }
+        chatStore.applyEdit(messageID: message.id, newText: trimmed, peerID: message.peerID, at: Date())
+        var content = MessageContent.text(trimmed)
+        content.editOf = message.id
+        if chatStore.isGroup(message.peerID) { content.groupID = message.peerID }
+        if let payload = try? content.encoded() {
+            await deliver(payload: payload, type: .text, clientID: UUID().uuidString,
+                          to: recipients(for: message.peerID))
+        }
+    }
+
+    /// Delete messages. Your own are deleted for everyone; others' are removed
+    /// only from your view.
+    func deleteMessages(_ messages: [ChatMessage]) async {
+        for m in messages {
+            if m.isMine && m.delivery != .sending {
+                chatStore.markDeleted(messageID: m.id, peerID: m.peerID)
+                var content = MessageContent()
+                content.deleteOf = m.id
+                if chatStore.isGroup(m.peerID) { content.groupID = m.peerID }
+                if let payload = try? content.encoded() {
+                    await deliver(payload: payload, type: .text, clientID: UUID().uuidString,
+                                  to: recipients(for: m.peerID))
+                }
+            } else {
+                chatStore.removeMessage(id: m.id, peerID: m.peerID)
+            }
+        }
+    }
+
+    /// Forward messages (text and/or attachments) to another conversation.
+    func forwardMessages(_ messages: [ChatMessage], to conversationID: String) async {
+        for m in messages.sorted(by: { $0.timestamp < $1.timestamp }) where !m.deleted {
+            var content = MessageContent(text: m.text.isEmpty ? nil : m.text, attachments: m.attachments)
+            content.forwarded = true
+            await sendContent(content, to: conversationID, localText: m.text, attachments: m.attachments)
         }
     }
 

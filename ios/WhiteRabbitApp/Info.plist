@@ -33,6 +33,11 @@
     <array>
         <string>UIInterfaceOrientationPortrait</string>
     </array>
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>audio</string>
+        <string>voip</string>
+    </array>
     <key>NSMicrophoneUsageDescription</key>
     <string>WhiteRabbit needs the microphone to record voice and video messages.</string>
     <key>NSCameraUsageDescription</key>

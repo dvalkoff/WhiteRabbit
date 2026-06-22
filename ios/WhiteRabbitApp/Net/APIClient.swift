@@ -126,6 +126,16 @@ final class APIClient {
         return r.url
     }
 
+    // MARK: - TURN
+
+    struct ICEServer: Decodable { let urls: [String]; let username: String?; let credential: String? }
+    private struct TurnResponse: Decodable { let iceServers: [ICEServer] }
+
+    func turnServers() async throws -> [ICEServer] {
+        let r: TurnResponse = try await get("/v1/turn")
+        return r.iceServers
+    }
+
     // MARK: - Plumbing
 
     private struct EmptyResponse: Codable {}

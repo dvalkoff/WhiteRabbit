@@ -25,6 +25,20 @@ struct Attachment: Codable, Equatable, Identifiable {
     var isMedia: Bool { (isImage || isVideo) && round != true }
 }
 
+/// WebRTC call signaling, carried E2E inside a message so the server can't MITM.
+struct CallSignal: Codable, Equatable {
+    enum Kind: String, Codable { case offer, answer, candidate, hangup, reject, busy, camera }
+    var callID: String
+    var kind: Kind
+    var video: Bool = false
+    var sdp: String?
+    var candidate: String?
+    var sdpMid: String?
+    var sdpMLineIndex: Int32?
+    var cameraOn: Bool?   // for .camera: peer toggled their camera
+    var sentAtMs: Int64 = 0
+}
+
 /// A quoted reference to another message, carried with a reply.
 struct ReplyPreview: Codable, Equatable {
     var messageID: String
@@ -48,10 +62,10 @@ struct MessageContent: Codable {
     var deleteOf: String?        // server id of a message to delete for everyone
     var replyTo: ReplyPreview?   // quoted message this is a reply to
     var forwarded: Bool = false  // marks a forwarded message
+    var call: CallSignal?        // WebRTC call signaling
 
-    /// True for edit/delete control messages (applied to an existing message,
-    /// not rendered as a new bubble).
-    var isControl: Bool { editOf != nil || deleteOf != nil }
+    /// True for control messages (applied/handled, not rendered as a bubble).
+    var isControl: Bool { editOf != nil || deleteOf != nil || call != nil }
 
     static func text(_ s: String) -> MessageContent { MessageContent(text: s, attachments: []) }
 

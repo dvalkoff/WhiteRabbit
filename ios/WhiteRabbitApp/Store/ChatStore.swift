@@ -2,6 +2,38 @@ import Foundation
 
 enum DeliveryState: String { case sending, sent, delivered, failed }
 
+/// A call-history entry shown inline in the chat (generated locally per device).
+struct CallLog: Equatable {
+    enum Outcome: String { case answered, missed, declined, cancelled, busy, failed }
+    var incoming: Bool
+    var video: Bool
+    var outcome: Outcome
+    var durationSec: Int
+
+    var durationText: String { String(format: "%d:%02d", durationSec / 60, durationSec % 60) }
+
+    var text: String {
+        switch outcome {
+        case .answered:  return "\(incoming ? "Incoming" : "Outgoing") \(video ? "video " : "")call · \(durationText)"
+        case .missed:    return "Missed \(video ? "video " : "")call"
+        case .declined:  return incoming ? "Declined call" : "Call declined"
+        case .cancelled: return "Cancelled call"
+        case .busy:      return "Line busy"
+        case .failed:    return "Call failed"
+        }
+    }
+
+    var icon: String {
+        switch outcome {
+        case .answered:  return incoming ? "phone.arrow.down.left.fill" : "phone.arrow.up.right.fill"
+        case .missed, .cancelled: return "phone.down.fill"
+        default:         return "phone.fill"
+        }
+    }
+
+    var isMissed: Bool { outcome == .missed }
+}
+
 /// A single decrypted message held locally. The server only ever stores
 /// ciphertext, so all plaintext history lives on-device.
 struct ChatMessage: Identifiable, Equatable {
@@ -19,10 +51,12 @@ struct ChatMessage: Identifiable, Equatable {
     var deleted: Bool = false
     var replyTo: ReplyPreview?
     var forwarded: Bool = false
+    var callLog: CallLog?
 
     /// One-line representation for the chat feed / search.
     var previewText: String {
         if deleted { return "🚫 Message deleted" }
+        if let callLog { return "📞 " + callLog.text }
         return MessageContent(text: text.isEmpty ? nil : text, attachments: attachments).preview
     }
 }
@@ -117,6 +151,14 @@ final class ChatStore: ObservableObject {
                                               unread: incrementUnread ? 1 : 0))
         }
         sortFeed()
+    }
+
+    /// Append a call-history entry to a conversation.
+    func addCallLog(peerID: String, _ log: CallLog, at: Date) {
+        var msg = ChatMessage(id: UUID().uuidString, clientID: nil, peerID: peerID,
+                              text: "", isMine: !log.incoming, timestamp: at, delivery: .sent)
+        msg.callLog = log
+        addMessage(msg, incrementUnread: log.isMissed)
     }
 
     /// Apply a server Ack: promote the temp outgoing message to its server id.

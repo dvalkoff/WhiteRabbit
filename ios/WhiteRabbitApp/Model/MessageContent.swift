@@ -18,6 +18,13 @@ struct Attachment: Codable, Equatable, Identifiable {
     var isMedia: Bool { isImage || isVideo }
 }
 
+/// A quoted reference to another message, carried with a reply.
+struct ReplyPreview: Codable, Equatable {
+    var messageID: String
+    var sender: String   // display name of the quoted message's author
+    var text: String     // short preview of the quoted message
+}
+
 /// The structured plaintext of a message: optional text plus 0..N attachments.
 /// A batch of media/files picked together is a single message (one album), not
 /// many. Encrypted as JSON and handed to the Double Ratchet.
@@ -28,6 +35,16 @@ struct MessageContent: Codable {
     /// message is fanned out per-recipient, and each copy carries this id so the
     /// receiver files it under the group conversation.
     var groupID: String?
+
+    // Control / metadata (all E2E — the server never interprets these).
+    var editOf: String?          // server id of a message whose text this replaces
+    var deleteOf: String?        // server id of a message to delete for everyone
+    var replyTo: ReplyPreview?   // quoted message this is a reply to
+    var forwarded: Bool = false  // marks a forwarded message
+
+    /// True for edit/delete control messages (applied to an existing message,
+    /// not rendered as a new bubble).
+    var isControl: Bool { editOf != nil || deleteOf != nil }
 
     static func text(_ s: String) -> MessageContent { MessageContent(text: s, attachments: []) }
 

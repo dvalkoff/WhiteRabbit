@@ -5,20 +5,25 @@ enum DeliveryState: String { case sending, sent, delivered, failed }
 /// A single decrypted message held locally. The server only ever stores
 /// ciphertext, so all plaintext history lives on-device.
 struct ChatMessage: Identifiable, Equatable {
-    let id: String          // server message id (or temp client id while sending)
+    var id: String          // server message id (or temp client id while sending)
     var clientID: String?   // correlates the Ack for an outgoing message
     let peerID: String      // conversation id (peer userID for 1:1, groupID for group)
     var senderID: String = ""   // who sent it (used to label group messages)
     var senderName: String?     // resolved display name of the sender (groups)
-    let text: String              // optional caption / text body
+    var text: String              // optional caption / text body
     var attachments: [Attachment] = []
     let isMine: Bool
     let timestamp: Date
     var delivery: DeliveryState
+    var editedAt: Date?
+    var deleted: Bool = false
+    var replyTo: ReplyPreview?
+    var forwarded: Bool = false
 
     /// One-line representation for the chat feed / search.
     var previewText: String {
-        MessageContent(text: text.isEmpty ? nil : text, attachments: attachments).preview
+        if deleted { return "🚫 Message deleted" }
+        return MessageContent(text: text.isEmpty ? nil : text, attachments: attachments).preview
     }
 }
 
@@ -118,12 +123,39 @@ final class ChatStore: ObservableObject {
     func applyAck(clientID: String, serverID: String, peerID: String) {
         guard var list = messagesByPeer[peerID] else { return }
         if let idx = list.firstIndex(where: { $0.clientID == clientID }) {
-            let m = list[idx]
-            list[idx] = ChatMessage(id: serverID, clientID: clientID, peerID: m.peerID,
-                                    text: m.text, attachments: m.attachments, isMine: m.isMine,
-                                    timestamp: m.timestamp, delivery: .sent)
+            list[idx].id = serverID
+            list[idx].delivery = .sent
             messagesByPeer[peerID] = list
         }
+    }
+
+    /// Replace the text of a message (edit-for-everyone).
+    func applyEdit(messageID: String, newText: String, peerID: String, at: Date) {
+        guard var list = messagesByPeer[peerID] else { return }
+        if let idx = list.firstIndex(where: { $0.id == messageID }) {
+            list[idx].text = newText
+            list[idx].editedAt = at
+            messagesByPeer[peerID] = list
+            refreshPreview(peerID)
+        }
+    }
+
+    /// Tombstone a message (delete-for-everyone).
+    func markDeleted(messageID: String, peerID: String) {
+        guard var list = messagesByPeer[peerID] else { return }
+        if let idx = list.firstIndex(where: { $0.id == messageID }) {
+            list[idx].deleted = true
+            list[idx].text = ""
+            list[idx].attachments = []
+            messagesByPeer[peerID] = list
+            refreshPreview(peerID)
+        }
+    }
+
+    private func refreshPreview(_ peerID: String) {
+        guard let last = messagesByPeer[peerID]?.last,
+              let idx = conversations.firstIndex(where: { $0.peerID == peerID }) else { return }
+        conversations[idx].lastMessage = last.previewText
     }
 
     func markDelivered(messageID: String, peerID: String) {
